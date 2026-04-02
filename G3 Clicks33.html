@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>G16 Galactic Civilization Engine</title>
+
+<style>
+body{margin:0;background:black;color:white;overflow:hidden;font-family:Arial}
+canvas{position:fixed;top:0;left:0}
+.ui{
+position:fixed;
+right:20px;
+top:20px;
+background:rgba(0,0,0,.6);
+padding:14px;
+border-radius:10px;
+font-size:13px
+}
+</style>
+</head>
+
+<body>
+
+<canvas id="c"></canvas>
+
+<div class="ui">
+<b>G16 GALACTIC ENGINE</b><br><br>
+W thrust<br>
+A/D rotate<br>
+S brake<br>
+Q/E zoom<br>
+R warp<br>
+Z jump<br>
+L land<br>
+K dock<br>
+X scanner<br>
+M map
+</div>
+
+<script>
+
+const canvas=document.getElementById("c")
+const ctx=canvas.getContext("2d")
+
+function resize(){
+canvas.width=innerWidth
+canvas.height=innerHeight
+}
+resize()
+addEventListener("resize",resize)
+
+const TAU=Math.PI*2
+let time=0
+
+/* INPUT */
+
+let keys={}
+onkeydown=e=>keys[e.key.toLowerCase()]=true
+onkeyup=e=>keys[e.key.toLowerCase()]=false
+
+/* PLAYER */
+
+let ship={
+x:0,
+y:0,
+vx:0,
+vy:0,
+angle:0,
+hp:100
+}
+
+/* STATE */
+
+let zoom=1
+let targetZoom=1
+let warp=false
+let warpTimer=0
+let scanner=false
+let showMap=false
+let landed=false
+let docked=false
+let orbitPlanet=null
+
+/* RANDOM */
+
+function rand(x,y){
+let v=Math.sin(x*12.9898+y*78.233)*43758.5453
+return v-Math.floor(v)
+}
+
+/* STARFIELD */
+
+const STAR_COUNT=40000
+const starX=new Float32Array(STAR_COUNT)
+const starY=new Float32Array(STAR_COUNT)
+const starZ=new Float32Array(STAR_COUNT)
+
+for(let i=0;i<STAR_COUNT;i++){
+starX[i]=(Math.random()-0.5)*500000
+starY[i]=(Math.random()-0.5)*500000
+starZ[i]=Math.random()*3+.5
+}
+
+/* GALAXY CACHE */
+
+const galaxyCache=new Map()
+const MAX_CACHE=600
+const GRID=26000
+
+function cacheGalaxy(key,g){
+galaxyCache.set(key,g)
+if(galaxyCache.size>MAX_CACHE){
+let first=galaxyCache.keys().next().value
+galaxyCache.delete(first)
+}
+}
+
+/* FACTIONS */
+
+const factions=[
+{color:"red"},
+{color:"cyan"},
+{color:"orange"},
+{color:"lime"}
+]
+
+/* PLANET TYPES */
+
+const planetTypes=[
+"ocean","desert","ice","lava","forest","gas"
+]
+
+/* GALAXY */
+
+function getGalaxy(x,y){
+
+let key=x+"_"+y
+if(galaxyCache.has(key)) return galaxyCache.get(key)
+
+let seed=rand(x,y)
+
+let planets=[]
+let count=3+Math.floor(seed*6)
+
+for(let i=0;i<count;i++){
+
+let pSeed=rand(x+i,y-i)
+
+planets.push({
+dist:300+i*200,
+size:10+pSeed*16,
+offset:pSeed*TAU,
+speed:.0004+pSeed*.0009,
+rings:pSeed>.9,
+station:pSeed>.86,
+civilization:pSeed>.83,
+faction:Math.floor(rand(x+i,y+i)*factions.length),
+type:planetTypes[Math.floor(pSeed*planetTypes.length)]
+})
+
+}
+
+let g={
+x,y,
+size:300+seed*360,
+blackHole:seed>.75,
+wormhole:seed>.94,
+asteroids:seed>.45&&seed<.55,
+planets
+}
+
+cacheGalaxy(key,g)
+return g
+}
+
+function getGalaxies(){
+
+let list=[]
+let gx=Math.floor(ship.x/GRID)
+let gy=Math.floor(ship.y/GRID)
+
+for(let x=-2;x<=2;x++)
+for(let y=-2;y<=2;y++){
+
+let cx=(gx+x)*GRID
+let cy=(gy+y)*GRID
+
+list.push(getGalaxy(cx,cy))
+
+}
+
+return list
+}
+
+/* SHIP PHYSICS */
+
+function updateShip(){
+
+if(keys["a"]) ship.angle-=0.05
+if(keys["d"]) ship.angle+=0.05
+
+let thrust=warp?2:.45
+
+if(keys["w"]){
+ship.vx+=Math.cos(ship.angle)*thrust
+ship.vy+=Math.sin(ship.angle)*thrust
+}
+
+if(keys["s"]){
+ship.vx*=0.94
+ship.vy*=0.94
+}
+
+let max=warp?85:30
+let speed=Math.hypot(ship.vx,ship.vy)
+
+if(speed>max){
+ship.vx*=0.9
+ship.vy*=0.9
+}
+
+ship.vx*=0.995
+ship.vy*=0.995
+
+ship.x+=ship.vx
+ship.y+=ship.vy
+
+}
+
+/* LANDING */
+
+function checkLanding(gs){
+
+let speed=Math.hypot(ship.vx,ship.vy)
+
+for(let g of gs)
+for(let p of g.planets){
+
+let ang=time*p.speed+p.offset
+
+let px=g.x+Math.cos(ang)*p.dist
+let py=g.y+Math.sin(ang)*p.dist
+
+let d=Math.hypot(px-ship.x,py-ship.y)
+
+if(d<p.size+120 && speed<4){
+
+if(keys["l"]){
+landed=true
+orbitPlanet=p
+keys["l"]=false
+}
+
+}
+
+}
+
+}
+
+/* WORMHOLE */
+
+function checkWormhole(gs){
+
+for(let g of gs){
+
+if(!g.wormhole) continue
+
+let d=Math.hypot(g.x-ship.x,g.y-ship.y)
+
+if(d<200){
+
+ship.x=(Math.random()-.5)*800000
+ship.y=(Math.random()-.5)*800000
+
+}
+
+}
+
+}
+
+/* UPDATE */
+
+let galaxiesFrame=[]
+
+function update(){
+
+time++
+
+if(!landed && !docked){
+
+updateShip()
+galaxiesFrame=getGalaxies()
+
+checkLanding(galaxiesFrame)
+checkWormhole(galaxiesFrame)
+
+}
+
+if(keys["q"]) targetZoom*=.97
+if(keys["e"]) targetZoom*=1.03
+
+targetZoom=Math.max(.05,Math.min(6,targetZoom))
+zoom+=(targetZoom-zoom)*.08
+
+if(keys["r"]){
+warp=true
+warpTimer=240
+keys["r"]=false
+}
+
+if(warp){
+warpTimer--
+if(warpTimer<=0) warp=false
+}
+
+if(keys["x"]){
+scanner=!scanner
+keys["x"]=false
+}
+
+if(keys["m"]){
+showMap=!showMap
+keys["m"]=false
+}
+
+if(keys["z"]){
+
+ship.x=(Math.random()-.5)*900000
+ship.y=(Math.random()-.5)*900000
+
+keys["z"]=false
+}
+
+if(landed && keys["l"]){
+landed=false
+orbitPlanet=null
+keys["l"]=false
+}
+
+}
+
+/* DRAW */
+
+function draw(){
+
+ctx.fillStyle="black"
+ctx.fillRect(0,0,canvas.width,canvas.height)
+
+/* STARS */
+
+ctx.fillStyle="white"
+
+for(let i=0;i<STAR_COUNT;i++){
+
+let depth=starZ[i]
+
+let x=(starX[i]-ship.x/depth)*zoom+canvas.width/2
+let y=(starY[i]-ship.y/depth)*zoom+canvas.height/2
+
+if(x<0||y<0||x>canvas.width||y>canvas.height) continue
+
+if(warp)
+ctx.fillRect(x,y,1,depth*zoom*18)
+else
+ctx.fillRect(x,y,depth*zoom*.7,depth*zoom*.7)
+
+}
+
+/* GALAXIES */
+
+for(let g of galaxiesFrame){
+
+let gx=(g.x-ship.x)*zoom+canvas.width/2
+let gy=(g.y-ship.y)*zoom+canvas.height/2
+
+/* spiral arms */
+
+for(let i=0;i<3;i++){
+
+ctx.strokeStyle="rgba(150,120,255,.3)"
+ctx.beginPath()
+
+for(let a=0;a<TAU*2;a+=0.2){
+
+let r=a*60
+let x=gx+Math.cos(a+i*2)*r*zoom
+let y=gy+Math.sin(a+i*2)*r*zoom
+
+if(a===0) ctx.moveTo(x,y)
+else ctx.lineTo(x,y)
+
+}
+
+ctx.stroke()
+
+}
+
+/* wormhole */
+
+if(g.wormhole){
+
+ctx.strokeStyle="cyan"
+ctx.beginPath()
+ctx.arc(gx,gy,70*zoom,0,TAU)
+ctx.stroke()
+
+}
+
+/* planets */
+
+for(let p of g.planets){
+
+let ang=time*p.speed+p.offset
+
+let px=(g.x+Math.cos(ang)*p.dist-ship.x)*zoom+canvas.width/2
+let py=(g.y+Math.sin(ang)*p.dist-ship.y)*zoom+canvas.height/2
+
+ctx.beginPath()
+ctx.fillStyle=factions[p.faction].color
+ctx.arc(px,py,p.size*zoom,0,TAU)
+ctx.fill()
+
+if(p.rings){
+
+ctx.strokeStyle="gray"
+ctx.beginPath()
+ctx.ellipse(px,py,p.size*2*zoom,p.size*.8*zoom,0,0,TAU)
+ctx.stroke()
+
+}
+
+if(p.station){
+
+ctx.fillStyle="white"
+ctx.fillRect(px-4,py-4,8,8)
+
+}
+
+}
+
+}
+
+/* SHIP */
+
+ctx.save()
+
+ctx.translate(canvas.width/2,canvas.height/2)
+ctx.rotate(ship.angle)
+
+ctx.beginPath()
+ctx.moveTo(20,0)
+ctx.lineTo(-12,8)
+ctx.lineTo(-12,-8)
+ctx.closePath()
+
+ctx.fillStyle="white"
+ctx.fill()
+
+ctx.restore()
+
+/* SCANNER */
+
+if(scanner){
+
+ctx.strokeStyle="rgba(0,255,255,.4)"
+ctx.beginPath()
+ctx.arc(canvas.width/2,canvas.height/2,300,0,TAU)
+ctx.stroke()
+
+}
+
+ctx.fillStyle="white"
+ctx.fillText("Speed "+Math.hypot(ship.vx,ship.vy).toFixed(1),20,20)
+
+}
+
+function loop(){
+update()
+draw()
+requestAnimationFrame(loop)
+}
+
+loop()
+
+</script>
+</body>
+</html>
